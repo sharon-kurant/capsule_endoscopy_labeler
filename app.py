@@ -265,7 +265,7 @@ def display_frame(row, all_files):
 
     if file_id:
         img = download_image(init_drive_service(), file_id)
-        st.image(img, use_column_width=True)
+        st.image(img, use_container_width=True)
     else:
         st.error("Image not found in Drive folder. Possibly it's missing?")
 
