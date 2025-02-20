@@ -1,17 +1,21 @@
-# Ignore Python cache
+# 1. Ignore macOS system files
+.DS_Store
+
+# 2. Ignore Python cache and compiled files
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
 
-# Ignore environment folder (if using venv instead of Conda)
-.venv/
-venv/
+# 3. Ignore your local virtual environment folder
+capsule_endoscopy_labeler/
+.capsule_endoscopy_labeler/
 
-# Ignore DS_Store (macOS)
-.DS_Store
+# 4. Ignore logs or temporary files (adjust as needed)
+*.log
+*.tmp
 
-# Ignore credentials / secrets
+# 5. Ignore secret files
 credentials.txt
 client_secret.json
 .streamlit/secrets.toml
