@@ -316,9 +316,31 @@ def show_visualizations(df_frames, df_unlabeled):
         fig2 = px.pie(data, names='status', values='count', title="Labeled vs Unlabeled")
         st.plotly_chart(fig2, use_container_width=True)
 
+def show_usage_description():
+    st.markdown(
+        """
+        ## Usage & Features
+
+        **Features**  
+        1. **Multi-label classification** for endoscopy frames (Junk, LowQuality, Normal, Stricture, Ulcer).  
+        2. **Automatic detection of new (unlabeled) frames** in the Drive folder.  
+        3. **Filtering** by Movie, Pillcam, or any label.  
+        4. **Visualizations** (Pie Charts for Label Distribution and Labeled vs. Unlabeled).  
+        5. **Saves changes** back to Excel on Google Drive.
+
+        ---
+        **How to Use**  
+        1. **Navigate** through frames using the "Previous" and "Next" buttons.  
+        2. **Toggle** checkboxes to assign or remove labels for each frame.  
+        3. Click **"Update Excel"** to commit your label changes (the updated file overwrites the original Excel file on Drive).  
+        4. Check the **Visualizations** tabs to see distribution of labels and labeled/unlabeled stats.
+        """
+    )
+
+
 # ------------ MAIN APP ------------
 def main():
-    st.title("Capsule Endoscopy Labeling App - Service Account Edition")
+    st.title("Capsule Endoscopy Labeling App")
 
     drive_service = init_drive_service()
     folder_id = st.secrets["gdrive"]["frames_folder_id"]
@@ -364,5 +386,7 @@ def main():
     # Some visualizations
     show_visualizations(df_frames, df_unlabeled)
 
+    show_usage_description()
+    
 if __name__ == "__main__":
     main()
