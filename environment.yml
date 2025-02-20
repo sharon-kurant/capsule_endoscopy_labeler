@@ -1,0 +1,11 @@
+name: capsule_endoscopy_labeler
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - streamlit
+  - pydrive
+  - pandas
+  - plotly
+  - Pillow
