@@ -7,7 +7,6 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from PIL import Image
-import base64
 import openpyxl
 
 # ------------ CONFIG ------------
@@ -29,62 +28,81 @@ def init_drive_service():
     return service
 
 # ------------ DRIVE HELPER FUNCTIONS ------------
-def download_excel_from_drive(drive_service, file_id) -> pd.DataFrame:
+@st.cache_data
+def download_image(file_id: str, max_size=800):
     """
-    Downloads an Excel file by file_id from Drive and loads it into a Pandas DataFrame.
-    Assumes the file is a genuine XLSX (MIME type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet).
+    Downloads an image from Google Drive, caches it in Streamlit,
+    and optionally resizes it.
+    We get the drive_service resource inside this function, so it's
+    not a direct function parameter.
     """
     if not file_id:
-        return pd.DataFrame()
+        return None
 
-    # Request the file content
+    # Inside the function, we fetch the resource
+    drive_service = init_drive_service()
+
     request = drive_service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
-
     while not done:
         status, done = downloader.next_chunk()
-        # Optionally, you can inspect status.progress() for download progress
-
-    # Read from the beginning
     fh.seek(0)
-    # Parse the Excel data directly from the binary stream
-    df = pd.read_excel(fh, engine='openpyxl')  # or omit engine if default works
+
+    img = Image.open(fh)
+    img.thumbnail((max_size, max_size), Image.LANCZOS)
+    return img
+
+def download_excel_from_drive(file_id) -> pd.DataFrame:
+    """
+    Downloads an Excel file by file_id from Drive and loads it into a Pandas DataFrame.
+    Assumes the file is a genuine XLSX.
+    """
+    if not file_id:
+        return pd.DataFrame()
+
+    drive_service = init_drive_service()
+    request = drive_service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+
+    fh.seek(0)
+    df = pd.read_excel(fh, engine='openpyxl')
     return df
 
-def upload_excel_to_drive(drive_service, df: pd.DataFrame, file_id: str):
+def upload_excel_to_drive(df: pd.DataFrame, file_id: str):
     """
-    Overwrites an Excel file on Drive using file_id with the contents of the given DataFrame.
-    Saves as XLSX (MIME type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet).
+    Overwrites an Excel file on Drive using file_id with the contents of df.
     """
     if not file_id:
         st.warning("No file ID specified for uploading. Skipping.")
         return
 
-    # Convert DataFrame to XLSX in memory
+    drive_service = init_drive_service()
     excel_buffer = io.BytesIO()
     df.to_excel(excel_buffer, index=False, engine='openpyxl')
     excel_buffer.seek(0)
 
-    # Prepare the file upload (XLSX MIME type)
     media_body = MediaIoBaseUpload(
         excel_buffer,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # Overwrite existing file in Drive
     update_request = drive_service.files().update(
         fileId=file_id,
         media_body=media_body
     )
     update_request.execute()
 
-def list_frames_in_folder(drive_service, folder_id: str):
+def list_frames_in_folder(folder_id: str):
     """
     Returns a list of (file_id, file_name) for images in the given Drive folder.
-    We filter by MIME type for images.
     """
+    drive_service = init_drive_service()
     files_list = []
     page_token = None
     query = f"'{folder_id}' in parents and (mimeType contains 'image/')"
@@ -102,24 +120,8 @@ def list_frames_in_folder(drive_service, folder_id: str):
             break
     return files_list
 
-def download_image(drive_service, file_id):
-    """
-    Downloads image content by file_id from Drive, returns a PIL Image.
-    """
-    request = drive_service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while done is False:
-        status, done = downloader.next_chunk()
-    fh.seek(0)
-    return Image.open(fh)
-
 # ------------ Excel / LABELING LOGIC ------------
 def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensure the DataFrame has the required columns for labeling.
-    """
     base_cols = ["frame", "class", "movie", "pillcam", "label_date"]
     for col in base_cols + LABEL_COLUMNS:
         if col not in df.columns:
@@ -143,7 +145,7 @@ def sync_unlabeled(df_frames, df_unlabeled, all_frame_files):
 
 def merge_temp_labels(df_frames, df_unlabeled):
     """
-    Merge the changes from st.session_state["temp_labels"] back into df_frames/df_unlabeled.
+    Merge changes from st.session_state['temp_labels'] back into df_frames/df_unlabeled.
     """
     temp_labels = st.session_state.get("temp_labels", {})
     if not temp_labels:
@@ -152,13 +154,11 @@ def merge_temp_labels(df_frames, df_unlabeled):
 
     changed_count = 0
     for frame_name, label_dict in temp_labels.items():
-        # Is it in df_frames?
+        # If it's in df_frames
         if frame_name in df_frames['frame'].values:
             idx = df_frames.index[df_frames['frame'] == frame_name][0]
-            # Update label columns
             for lab_col in LABEL_COLUMNS:
                 df_frames.at[idx, lab_col] = label_dict.get(lab_col, 0)
-            # Build 'class' from those labels
             assigned = [k for k,v in label_dict.items() if v == 1]
             if len(assigned) == 1:
                 df_frames.at[idx, 'class'] = assigned[0]
@@ -169,7 +169,7 @@ def merge_temp_labels(df_frames, df_unlabeled):
             df_frames.at[idx, 'label_date'] = time.strftime('%Y-%m-%d %H:%M:%S')
             changed_count += 1
         else:
-            # Then it should be in unlabeled (or new).
+            # It's in df_unlabeled (or new)
             new_row = {
                 'frame': frame_name,
                 'movie': "",
@@ -183,13 +183,12 @@ def merge_temp_labels(df_frames, df_unlabeled):
                 new_row['class'] = ",".join(assigned)
             else:
                 new_row['class'] = ""
-            
+
             df_frames = pd.concat([df_frames, pd.DataFrame([new_row])], ignore_index=True)
-            # Remove from unlabeled
             df_unlabeled = df_unlabeled[df_unlabeled['frame'] != frame_name]
             changed_count += 1
 
-    st.session_state["temp_labels"] = {}  # clear after merging
+    st.session_state["temp_labels"] = {}
     return df_frames, df_unlabeled, changed_count
 
 # ------------ STREAMLIT UI FUNCTIONS ------------
@@ -209,7 +208,6 @@ def sidebar_filters(df_frames, df_unlabeled):
     return status, movie_filter, pillcam_filter, label_sel
 
 def apply_filters(df_frames, df_unlabeled, status, movie_filter, pillcam_filter, label_sel):
-    # Mark them so we can combine
     df_frames = df_frames.copy()
     df_frames["is_labeled"] = True
     df_unlabeled = df_unlabeled.copy()
@@ -235,53 +233,16 @@ def apply_filters(df_frames, df_unlabeled, status, movie_filter, pillcam_filter,
 
     return df_show
 
-def navigation(df):
-    st.write(f"Found {len(df)} frame(s) after filtering.")
-    if len(df) == 0:
-        return None
-    if "current_index" not in st.session_state:
-        st.session_state.current_index = 0
-
-    col1, col2, col3 = st.columns([1,1,1])
-    with col1:
-        if st.button("Previous"):
-            st.session_state.current_index = max(st.session_state.current_index - 1, 0)
-    with col3:
-        if st.button("Next"):
-            st.session_state.current_index = min(st.session_state.current_index + 1, len(df) - 1)
-
-    idx = st.session_state.current_index
-    row = df.iloc[idx]
-    return row
-
-def display_frame(row, all_files):
-    st.subheader(f"Frame: {row['frame']}")
-    # find the file_id
-    file_id = None
-    for (fid, fname) in all_files:
-        if fname == row['frame']:
-            file_id = fid
-            break
-
-    if file_id:
-        img = download_image(init_drive_service(), file_id)
-        st.image(img, use_column_width=True)
-    else:
-        st.error("Image not found in Drive folder. Possibly it's missing?")
-
 def labeling_ui(row):
     if "temp_labels" not in st.session_state:
         st.session_state["temp_labels"] = {}
     frame_name = row['frame']
 
-    # Current session label state
     current_dict = st.session_state["temp_labels"].get(frame_name, {})
-    # if empty, fallback to row
     if not current_dict:
         current_dict = {}
         for lab in LABEL_COLUMNS:
             val = row.get(lab, 0)
-            # row might be float or None, ensure 0 or 1
             val = 1 if val == 1 else 0
             current_dict[lab] = val
 
@@ -296,7 +257,6 @@ def show_visualizations(df_frames, df_unlabeled):
     st.subheader("Visualizations")
     tab1, tab2 = st.tabs(["Label Distribution", "Labeled vs Unlabeled"])
 
-    # Label Distribution (Multi-label)
     with tab1:
         counts = {}
         for lab in LABEL_COLUMNS:
@@ -305,7 +265,6 @@ def show_visualizations(df_frames, df_unlabeled):
         fig1 = px.pie(dist_df, names="label", values="count", title="Label Distribution")
         st.plotly_chart(fig1, use_container_width=True)
 
-    # Labeled vs Unlabeled
     with tab2:
         labeled_count = len(df_frames)
         unlabeled_count = len(df_unlabeled)
@@ -330,63 +289,118 @@ def show_usage_description():
 
         ---
         **How to Use**  
-        1. **Navigate** through frames using the "Previous" and "Next" buttons.  
-        2. **Toggle** checkboxes to assign or remove labels for each frame.  
-        3. Click **"Update Excel"** to commit your label changes (the updated file overwrites the original Excel file on Drive).  
-        4. Check the **Visualizations** tabs to see distribution of labels and labeled/unlabeled stats.
+        1. **Navigate** through frames using Next/Previous buttons.  
+        2. **Toggle** checkboxes to assign/remove labels for each frame.  
+        3. Click **"Update Excel"** to commit label changes (overwrites the original Excel file on Drive).  
+        4. Check the **Visualizations** tabs for label distribution and labeled/unlabeled stats.
         """
     )
 
+# -------------- Prefetch ---------------
+def prefetch_images(df_rows, all_files, max_size=800):
+    """
+    Pre-fetch images around a subset of frames so they're in the cache
+    when the user navigates.
+    """
+    for _, row in df_rows.iterrows():
+        frame_name = row['frame']
+        file_id = None
+        for (fid, fname) in all_files:
+            if fname == frame_name:
+                file_id = fid
+                break
+        if file_id:
+            download_image(file_id, max_size=max_size)
+
+def navigation(df_display, all_files):
+    """
+    Next/Previous approach with prefetching ±5 frames for faster loading.
+    """
+    if "nav_index" not in st.session_state:
+        st.session_state.nav_index = 0
+
+    total = len(df_display)
+    st.write(f"Total frames in display: {total}")
+
+    if total == 0:
+        return
+
+    # Pre-fetch next/previous 5 frames
+    idx_start = max(st.session_state.nav_index - 5, 0)
+    idx_end = min(st.session_state.nav_index + 6, total)
+    subset = df_display.iloc[idx_start:idx_end]
+    prefetch_images(subset, all_files, max_size=800)
+
+    # Show current frame + labeling
+    row = df_display.iloc[st.session_state.nav_index]
+    st.subheader(f"Frame: {row['frame']}")
+    labeling_ui(row)
+
+    # Download current image
+    file_id = None
+    for (fid, fname) in all_files:
+        if fname == row['frame']:
+            file_id = fid
+            break
+    if file_id:
+        img = download_image(file_id)
+        if img:
+            st.image(img, use_container_width=True)
+        else:
+            st.error("Image could not be loaded.")
+    else:
+        st.error("File ID not found in list.")
+
+    # Nav controls
+    col1, col2, col3 = st.columns([1,2,1])
+    with col1:
+        if st.button("Previous"):
+            st.session_state.nav_index = max(0, st.session_state.nav_index - 1)
+    with col3:
+        if st.button("Next"):
+            st.session_state.nav_index = min(total - 1, st.session_state.nav_index + 1)
 
 # ------------ MAIN APP ------------
 def main():
     st.title("Capsule Endoscopy Labeling App")
 
-    drive_service = init_drive_service()
     folder_id = st.secrets["gdrive"]["frames_folder_id"]
     frames_ds_file_id = st.secrets["gdrive"]["frames_ds_file_id"]
     unlabeled_file_id = st.secrets["gdrive"].get("unlabeled_file_id", None)
 
-    # Load Labeled Excel
-    df_frames = download_excel_from_drive(drive_service, frames_ds_file_id)
+    df_frames = download_excel_from_drive(frames_ds_file_id)
     df_frames = ensure_columns(df_frames)
-
-    # Load Unlabeled Excel
-    df_unlabeled = download_excel_from_drive(drive_service, unlabeled_file_id)
+    df_unlabeled = download_excel_from_drive(unlabeled_file_id)
     df_unlabeled = ensure_columns(df_unlabeled)
 
-    # List all frames in folder
-    all_files = list_frames_in_folder(drive_service, folder_id)
-    # Sync new frames
+    all_files = list_frames_in_folder(folder_id)
     df_unlabeled = sync_unlabeled(df_frames, df_unlabeled, all_files)
 
     # Sidebar filters
     status, movie_filter, pillcam_filter, label_sel = sidebar_filters(df_frames, df_unlabeled)
     df_display = apply_filters(df_frames, df_unlabeled, status, movie_filter, pillcam_filter, label_sel)
 
-    row = navigation(df_display)
-    if row is not None:
-        display_frame(row, all_files)
-        labeling_ui(row)
+    # Next/Previous navigation with prefetch
+    navigation(df_display, all_files)
 
     st.divider()
 
-    # Update Excels
+    # Update Excel button
     if st.button("Update Excel"):
         df_frames, df_unlabeled, changed_count = merge_temp_labels(df_frames, df_unlabeled)
         if changed_count > 0:
-            # Save them back
-            upload_excel_to_drive(drive_service, df_frames, frames_ds_file_id)
+            upload_excel_to_drive(df_frames, frames_ds_file_id)
             if unlabeled_file_id:
-                upload_excel_to_drive(drive_service, df_unlabeled, unlabeled_file_id)
+                upload_excel_to_drive(df_unlabeled, unlabeled_file_id)
             st.success(f"Updated {changed_count} frame(s).")
         else:
             st.info("No changes to commit.")
 
-    # Some visualizations
+    # Visualizations
     show_visualizations(df_frames, df_unlabeled)
 
+    # Usage
     show_usage_description()
-    
+
 if __name__ == "__main__":
     main()
