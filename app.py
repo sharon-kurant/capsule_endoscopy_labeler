@@ -8,6 +8,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from PIL import Image
 import base64
+import openpyxl
 
 # ------------ CONFIG ------------
 LABEL_COLUMNS = ["Junk", "LowQuality", "Normal", "Stricture", "Ulcer"]
@@ -28,41 +29,51 @@ def init_drive_service():
     return service
 
 # ------------ DRIVE HELPER FUNCTIONS ------------
-def download_csv_from_drive(drive_service, file_id) -> pd.DataFrame:
+def download_excel_from_drive(drive_service, file_id) -> pd.DataFrame:
     """
-    Downloads the CSV file by file_id from Drive, loads into a Pandas DataFrame.
+    Downloads an Excel file by file_id from Drive and loads it into a Pandas DataFrame.
+    Assumes the file is a genuine XLSX (MIME type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet).
     """
     if not file_id:
         return pd.DataFrame()
 
+    # Request the file content
     request = drive_service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
-    while done is False:
-        status, done = downloader.next_chunk()
 
+    while not done:
+        status, done = downloader.next_chunk()
+        # Optionally, you can inspect status.progress() for download progress
+
+    # Read from the beginning
     fh.seek(0)
-    data_str = fh.read().decode("utf-8")
-    if data_str.strip() == "":
-        return pd.DataFrame()
-    df = pd.read_csv(io.StringIO(data_str))
+    # Parse the Excel data directly from the binary stream
+    df = pd.read_excel(fh, engine='openpyxl')  # or omit engine if default works
     return df
 
-def upload_csv_to_drive(drive_service, df: pd.DataFrame, file_id: str):
+def upload_excel_to_drive(drive_service, df: pd.DataFrame, file_id: str):
     """
-    Overwrites a CSV file on Drive using file_id with the contents of the given DataFrame.
+    Overwrites an Excel file on Drive using file_id with the contents of the given DataFrame.
+    Saves as XLSX (MIME type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet).
     """
     if not file_id:
         st.warning("No file ID specified for uploading. Skipping.")
         return
-    
-    # Convert df to CSV string
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
-    csv_bytes = csv_buffer.getvalue().encode("utf-8")
 
-    media_body = MediaIoBaseUpload(io.BytesIO(csv_bytes), mimetype="text/csv")
+    # Convert DataFrame to XLSX in memory
+    excel_buffer = io.BytesIO()
+    df.to_excel(excel_buffer, index=False, engine='openpyxl')
+    excel_buffer.seek(0)
+
+    # Prepare the file upload (XLSX MIME type)
+    media_body = MediaIoBaseUpload(
+        excel_buffer,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # Overwrite existing file in Drive
     update_request = drive_service.files().update(
         fileId=file_id,
         media_body=media_body
@@ -104,7 +115,7 @@ def download_image(drive_service, file_id):
     fh.seek(0)
     return Image.open(fh)
 
-# ------------ CSV / LABELING LOGIC ------------
+# ------------ Excel / LABELING LOGIC ------------
 def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Ensure the DataFrame has the required columns for labeling.
@@ -314,12 +325,12 @@ def main():
     frames_ds_file_id = st.secrets["gdrive"]["frames_ds_file_id"]
     unlabeled_file_id = st.secrets["gdrive"].get("unlabeled_file_id", None)
 
-    # Load Labeled CSV
-    df_frames = download_csv_from_drive(drive_service, frames_ds_file_id)
+    # Load Labeled Excel
+    df_frames = download_excel_from_drive(drive_service, frames_ds_file_id)
     df_frames = ensure_columns(df_frames)
 
-    # Load Unlabeled CSV
-    df_unlabeled = download_csv_from_drive(drive_service, unlabeled_file_id)
+    # Load Unlabeled Excel
+    df_unlabeled = download_excel_from_drive(drive_service, unlabeled_file_id)
     df_unlabeled = ensure_columns(df_unlabeled)
 
     # List all frames in folder
@@ -338,14 +349,14 @@ def main():
 
     st.divider()
 
-    # Update CSVs
-    if st.button("Update CSV"):
+    # Update Excels
+    if st.button("Update Excel"):
         df_frames, df_unlabeled, changed_count = merge_temp_labels(df_frames, df_unlabeled)
         if changed_count > 0:
             # Save them back
-            upload_csv_to_drive(drive_service, df_frames, frames_ds_file_id)
+            upload_excel_to_drive(drive_service, df_frames, frames_ds_file_id)
             if unlabeled_file_id:
-                upload_csv_to_drive(drive_service, df_unlabeled, unlabeled_file_id)
+                upload_excel_to_drive(drive_service, df_unlabeled, unlabeled_file_id)
             st.success(f"Updated {changed_count} frame(s).")
         else:
             st.info("No changes to commit.")
